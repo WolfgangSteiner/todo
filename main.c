@@ -23,10 +23,29 @@ typedef struct {
     todo_t* data;
 } todo_list_t;
 
+typedef struct {
+    size_t size;
+    todo_t* data;
+} todo_query_result_t;
+
+
 typedef enum {
     TODO_VERBOSITY_SHORT,
     TODO_VERBOSITY_LONG
 } todo_verbosity_t;
+
+typedef enum {
+    RESULT_SUCCESS = 0,
+    RESULT_ERROR = 1
+} result_t;
+
+
+grv_str generate_id() {
+    u64 id;
+    grv_random_bytes(&id, sizeof(id));
+    return grv_str_from_u64(id);
+}
+
 
 todo_t* read_todo(grv_str* filename) {
     grv_str content = grv_fs_read_file(filename);
@@ -111,6 +130,18 @@ bool todo_list_is_id_unique(todo_list_t* list, grv_str* id) {
     return num_matches == 1;
 }
 
+grv_strarr todo_list_get_matching_ids(todo_list_t* list, grv_str* id) {
+    grv_strarr result = grv_strarr_new();
+    for (int i = 0; i < list->size; i++) {
+        todo_t* todo = &list->data[i];
+        if (grv_str_starts_with(&todo->id, id)) {
+            grv_str match = grv_str_copy(&todo->id);
+            grv_strarr_push_back(&result, match);
+        }
+    }
+    return result;
+}
+
 todo_t* todo_list_get(todo_list_t* list, grv_str* id) {
     for (int i = 0; i < list->size; i++) {
         todo_t* todo = &list->data[i];
@@ -166,8 +197,251 @@ void print_todo_list(todo_list_t* list, todo_verbosity_t verbosity, bool only_op
     }
 }
 
-int main(void)
-{
+
+result_t write_todo(todo_t* todo) {
+    grv_str filename = grv_fs_add_ext(&todo->id, "todo");
+    if (!grv_fs_dir_exists(".todo")) {
+        grv_fs_mkdir(".todo");
+    }   
+    grv_str path = grv_fs_make_path(".todo", &filename);
+    grv_str_free(&filename);
+    FILE* file = fopen(grv_str_cstr(&path), "w");
+    grv_str_free(&path);
+    if (!file) {
+        fprintf(stderr, "Failed to open file: %s\n", grv_str_cstr(&path));
+        return RESULT_ERROR;
+    }
+
+    fprintf(file, "title: %s\n", grv_str_cstr(&todo->title));
+    fprintf(file, "date: %s\n", grv_str_cstr(&todo->date));
+    fprintf(file, "tags: %s\n", grv_str_cstr(&todo->tags));    
+    fprintf(file, "priority: %f\n", todo->priority);
+    fprintf(file, "status: %s\n", todo->status == TODO_STATUS_OPEN ? "open" : "resolved");
+    fprintf(file, "description: %s\n", grv_str_cstr(&todo->description));
+
+    return RESULT_SUCCESS;
+}
+
+bool is_cmd(grv_str* arg, char* name, char* sname) {
+    return grv_str_eq_cstr(arg, name) || grv_str_eq_cstr(arg, sname);
+}
+
+
+#define CHECK_ARG_AVAILABLE(MSG) \
+    if (grv_strarr_size(&args) == 0) { \
+        fprintf(stderr, "%s\n", MSG); \
+        return RESULT_ERROR; \
+    }
+
+#define CHECK_TRUE(COND, MSG) \
+    if (!(COND)) { \
+        fprintf(stderr, "%s\n", MSG); \
+        return RESULT_ERROR; \
+    }   
+
+bool is_option(grv_str* arg, char* name, char* sname) {
+    grv_str long_name = grv_str_cat_cstr_cstr("--", name);
+    grv_str short_name = grv_str_cat_cstr_cstr("-", sname);
+    bool result = grv_str_eq(arg, &long_name) || grv_str_eq(arg, &short_name);
+    grv_str_free(&long_name);
+    grv_str_free(&short_name);
+    return result;
+}
+
+
+todo_query_result_t todo_list_find(todo_list_t* list, grv_str* id) {
+    todo_query_result_t res = {0};
+    for (int i = 0; i < list->size; i++) {
+        todo_t* todo = &list->data[i];
+        if (grv_str_starts_with(&todo->id, id)) {
+        }
+    }
+}
+
+todo_t* find_todo_by_id(todo_list_t* list, grv_str* id) {
+    if (!todo_list_has_id(&list, &id)) {
+        fprintf(stderr, "Todo item with id %s does not exist.\n", grv_str_cstr(&id));
+        exit(1);
+    } else if (!todo_list_is_id_unique) {
+        fprintf(stderr, "Todo item with id %s is not unique.\n", grv_str_cstr(&id));
+        grv_strarr ids = todo_list_get_matching_ids(&list, &id);
+        fprintf(stderr, "Found the following matching todo items: \n");
+        for (int i = 0; i < grv_strarr_size(&ids); i++) {
+            grv_str* id = grv_strarr_at(&ids, i);
+            todo_t* todo = todo_list_get_by_id(&list, id);
+            print_todo(&todo, TODO_VERBOSITY_SHORT);
+        }
+        // prompts the user to choose one of the ids
+        printf("Please choose one of the ids: ");
+
+
+        return RESULT_ERROR;
+    }
+}
+
+
+result_t create_todo(grv_strarr args) {
+    todo_t todo = {};
+    todo.id = grv_str_new(grv_util_uuid());
+    todo.status = TODO_STATUS_OPEN;
+    todo.priority = 0.5f;
+    todo.date = grv_str_new(grv_util_date());
+
+    while (grv_strarr_size(&args)) {
+        grv_str arg = grv_strarr_pop_front(&args);
+        if (grv_str_eq_cstr(&arg, "--title") || grv_str_eq_cstr(&arg, "-t")) {
+            CHECK_ARG_AVAILABLE("Missing title for --title argument");
+            grv_str title = grv_strarr_pop_front(&args);
+            todo.title = title;
+        } else if (grv_str_eq_cstr(&arg, "--tags") || grv_str_eq_cstr(&arg, "-g")) {    
+            CHECK_ARG_AVAILABLE("Missing tags for --tags argument");
+            grv_str tags = grv_strarr_pop_front(&args);
+            todo.tags = tags;
+        } else if (grv_str_eq_cstr(&arg, "--description") || grv_str_eq_cstr(&arg, "-d")) {
+            CHECK_ARG_AVAILABLE("Missing description for --description argument");
+            grv_str description = grv_strarr_pop_front(&args);
+            todo.description = description;
+        } else if (grv_str_eq_cstr(&arg, "--priority") || grv_str_eq_cstr(&arg, "-p")) {
+            CHECK_ARG_AVAILABLE("Missing priority for --priority argument");
+            grv_str priority = grv_strarr_pop_front(&args);
+            CHECK_TRUE(grv_str_is_float(&priority), "Priority must be a float");
+            todo.priority = grv_str_to_f32(&priority);
+            grv_str_free(&priority);
+        } else if (grv_str_starts_with_cstr(&arg, "--")) {
+            fprintf(stderr, "Unknown option: %s\n", grv_str_cstr(&arg));
+            return RESULT_ERROR;
+        } else {
+            CHECK_ARG_AVAILABLE("Please specify a title for the todo item.");
+            grv_str title = grv_strarr_pop_front(&args);
+            todo.title = title;
+        }
+    }
+
+    write_todo(&todo);
+
+    return RESULT_SUCCESS;
+}
+
+result_t resolve_todo(grv_strarr args) {
+    CHECK_ARG_AVAILABLE("Please specify a todo id to resolve.");
+    grv_str id = grv_strarr_pop_front(&args);
+    todo_list_t list = read_todo_list();    
+    
+    if (!todo_list_has_id(&list, &id)) {
+        fprintf(stderr, "Todo item with id %s does not exist.\n", grv_str_cstr(&id));
+        return RESULT_ERROR;
+    } else if (!todo_list_is_id_unique) {
+        fprintf(stderr, "Todo item with id %s is not unique.\n", grv_str_cstr(&id));
+        grv_strarr ids = todo_list_get_matching_ids(&list, &id);
+        fprintf(stderr, "Found the following matching todo items: \n");
+        for (int i = 0; i < grv_strarr_size(&ids); i++) {
+            grv_str* id = grv_strarr_at(&ids, i);
+            todo_t* todo = todo_list_get_by_id(&list, id);
+            print_todo(&todo, TODO_VERBOSITY_SHORT);
+        }
+        return RESULT_ERROR;
+    }
+
+    todo_t* todo = todo_list_get_by_id(&list, &id);
+
+    if (todo->status == TODO_STATUS_RESOLVED) {
+        fprintf(stderr, "Todo item is already resolved.\n");
+        return RESULT_ERROR;
+    }
+    todo->status = TODO_STATUS_RESOLVED;
+    write_todo(&todo);
+    return RESULT_SUCCESS;
+}
+
+result_t list_todos(grv_strarr args) {
     todo_list_t list = read_todo_list();
-    print_todo_list(&list, TODO_VERBOSITY_SHORT, true);
+    todo_verbosity_t verbosity = TODO_VERBOSITY_SHORT;
+    bool show_resolved = false;
+    grv_str id = {};
+    while (grv_strarr_size(&args)) {
+        grv_str arg = grv_strarr_pop_front(&args);
+        if (is_option(&arg, "verbose", "v")) {
+            verbosity = TODO_VERBOSITY_LONG;
+        } else if (is_option(&arg, "resolved", "r")) {
+            show_resolved = true;
+        } else {
+            id = grv_str_copy(arg);
+        }
+    }
+    
+    if (grv_str_size(&id) > 0) {
+    }
+
+
+    print_todo_list(&list, verbosity, show_resolved);
+    return RESULT_SUCCESS;
+}
+
+result_t edit_todo(grv_strarr args) {
+    CHECK_ARG_AVAILABLE("Please specify a todo id to edit.");
+    grv_str id = grv_strarr_pop_front(&args);
+    todo_list_t list = read_todo_list();    
+
+    if (!todo_list_has_id(&list, &id)) {
+        fprintf(stderr, "Todo item with id %s does not exist.\n", grv_str_cstr(&id));
+        return RESULT_ERROR;
+    } else if (!todo_list_is_id_unique) {
+        fprintf(stderr, "Todo item with id %s is not unique.\n", grv_str_cstr(&id));
+        grv_strarr ids = todo_list_get_matching_ids(&list, &id);
+        fprintf(stderr, "Found the following matching todo items: \n");
+        for (int i = 0; i < grv_strarr_size(&ids); i++) {
+            grv_str* id = grv_strarr_at(&ids, i);
+            todo_t* todo = todo_list_get_by_id(&list, id);
+            print_todo(&todo, TODO_VERBOSITY_SHORT);
+        }
+        return RESULT_ERROR;
+    }
+
+    todo_t* todo = todo_list_get_by_id(&list, &id);
+    grv_str title = grv_str_copy(todo->title);
+    grv_str description = grv_str_copy(todo->description);
+    grv_str tags = grv_str_copy(todo->tags);
+    f32 priority = todo->priority;
+    while (grv_strarr_size(&args)) {
+        grv_str arg = grv_strarr_pop_front(&args);
+        if (grv_str_eq_cstr(&arg, "--title") || grv_str_eq_cstr(&arg, "-t")) {
+            CHECK_ARG_AVAILABLE("Missing title for --title argument");
+            grv_str title = grv_strarr_pop_front(&args);
+            todo->title = title;
+        } else if (grv_str_eq_cstr(&arg, "--tags") || grv_str_eq_cstr(&arg, "-g")) {    
+            CHECK_ARG_AVAILABLE("Missing tags for --tags argument");
+            grv_str tags = grv_strarr_pop_front(&args);
+            todo->tags = tags;
+        } else if (grv_str_eq_cstr(&arg, "--description") || grv_str_eq_cstr(&arg, "-d")) {
+            CHECK_ARG_AVAILABLE("Missing description for --description argument");
+            gr
+}
+
+int main(int argc, char** argv)
+{
+    grv_strarr args = grv_strarr_from_cstr_array(argv, argc);
+    grv_strarr_remove_front(&args);
+    
+    if (grv_strarr_size(&args) == 0) {
+        todo_list_t list = read_todo_list();
+        print_todo_list(&list, TODO_VERBOSITY_SHORT, true);
+    } else {
+        grv_str cmd = grv_strarr_pop_front(&args);
+
+        if (is_cmd(&cmd, "create", "c")) {
+            create_todo(args);   
+        } else if (is_cmd, "resolve", "r") {
+            resolve_todo(args);
+        } else if (is_cmd, "list", "l") {
+            list_todos(args);
+        } else if (is_cmd, "edit", "e") {
+            edit_todo(args);
+        } else if (is_cmd, "delete", "d") {
+            delete_todo(args);
+        } else if (is_cmd, "help", "h") {
+            print_help();
+        } else {
+            fprintf(stderr, "Unknown command: %s\n", grv_str_cstr(&cmd));
+        }
+    }
 }

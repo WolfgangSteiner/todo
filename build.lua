@@ -1,5 +1,5 @@
 grvpath = "../grv"
-package.path = package.path .. ";" .. grvpath .. "/util/?.lua"
+package.path = package.path .. ";" .. grvpath .. "/lua/?.lua"
 require("grvbld")
 
 grvbld.build_config.inc = {grvpath .. "/include"}
